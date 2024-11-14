@@ -7,10 +7,13 @@ import { Response } from '../response/response.entity';
 import { Repository } from 'typeorm';
 import { User } from 'src/user/user.entity';
 import { Rank } from 'src/rank/rank.entity';
+import OpenAI from 'openai';
 
 @Injectable()
 export class LevelService implements OnModuleInit {
   private bot: TelegramBot;
+  private openai: OpenAI;
+  private isGptEnabled: boolean = false;
 
   constructor(
     private configService: ConfigService,
@@ -24,14 +27,31 @@ export class LevelService implements OnModuleInit {
 
   onModuleInit() {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
+    const openaiApiKey = this.configService.get<string>('OPENAI_API_KEY');
+
     this.bot = new TelegramBot(token, { polling: true });
+    this.openai = new OpenAI({
+      apiKey: openaiApiKey,
+    });
 
     this.bot.onText(/\/салам алейкум/i, (msg) => this.handleHelloCommand(msg));
     this.bot.onText(/нет/i, (msg) => this.handleNotCommand(msg));
-
     this.bot.onText(/\/register/, (msg) => this.handleRegisterCommand(msg));
     this.bot.onText(/\/level/, (msg) => this.handleLevelCommand(msg));
+    this.bot.onText(/\/roll/, (msg) => this.handleRollCommand(msg));
+
+    this.bot.onText(/\/gpt-on/i, (msg) => this.handleGptOnCommand(msg));
+    this.bot.onText(/\/gpt-off/i, (msg) => this.handleGptOffCommand(msg));
+    
+    //Обрабатываем все сообщения через OpenAI, если GPT активирован
+    this.bot.on('message', (msg) => {
+      if (this.isGptEnabled && msg.text) {
+        this.handleGptMessage(msg);
+      }
+    });
   }
+
+  
 
   private handleHelloCommand(msg: TelegramBot.Message) {
     const chatId = msg.chat.id;
@@ -119,5 +139,49 @@ export class LevelService implements OnModuleInit {
       chatId,
       `${user.name}, ваш текущий уровень: ${user.rank.title}`,
     );
+  }
+
+  private handleRollCommand(msg: TelegramBot.Message) {
+    const chatId = msg.chat.id;
+    let result = null;
+    // Отправка броска кубика
+    this.bot.sendDice(chatId).then((diceMessage) => {
+      result = diceMessage.dice?.value;
+      setTimeout(() => {
+        this.bot.sendMessage(chatId, `Выпало: ${result} 🎲`);
+      }, 4000);
+    });
+  }
+
+  // Обработка вкл GPT
+  private handleGptOnCommand(msg: TelegramBot.Message) {
+    const chatId = msg.chat.id;
+    this.isGptEnabled = true;
+    this.bot.sendMessage(chatId, 'GPT теперь включен. Отправьте любое сообщение, и я отвечу с помощью GPT.');
+  }
+
+  // Обработка выкл GPT
+  private handleGptOffCommand(msg: TelegramBot.Message) {
+    const chatId = msg.chat.id;
+    this.isGptEnabled = false;
+    this.bot.sendMessage(chatId, 'GPT теперь выключен.');
+  }
+
+  private async handleGptMessage(msg: TelegramBot.Message) {
+    const chatId = msg.chat.id;
+    const userMessage = msg.text;
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        messages: [{ role: 'user', content: userMessage }],
+        model: 'gpt-3.5-turbo', // Можно юзат другую модель, если хотите
+      });
+
+      const gptReply = response.choices[0].message.content;
+      this.bot.sendMessage(chatId, gptReply);
+    } catch (error) {
+      console.error('Ошибка GPT:', error);
+      this.bot.sendMessage(chatId, 'Извините, произошла ошибка при обработке вашего запроса.');
+    }
   }
 }
